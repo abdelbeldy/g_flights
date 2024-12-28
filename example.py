@@ -1,6 +1,19 @@
-import argparse
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import json
 from fast_flights import FlightData, Passengers, create_filter, get_flights
+
+app = FastAPI()
+
+class FlightRequest(BaseModel):
+    origin: str
+    destination: str
+    depart_date: str
+    return_date: str
+    adults: int = 1
+    type: str = "economy"
+    max_stops: int = None
+    inject_eu_cookies: bool = False
 
 def flight_to_dict(flight):
     return {
@@ -21,67 +34,42 @@ def result_to_dict(result):
         "flights": [flight_to_dict(flight) for flight in getattr(result, 'flights', [])]
     }
 
-def main():
-    # Argument parser for command-line input
-    parser = argparse.ArgumentParser(description="Flight Price Finder")
-    parser.add_argument('--origin', required=True, help="Origin airport code")
-    parser.add_argument('--destination', required=True, help="Destination airport code")
-    parser.add_argument('--depart_date', required=True, help="Beginning trip date (YYYY-MM-DD)")
-    parser.add_argument('--return_date', required=True, help="Ending trip date (YYYY-MM-DD)")
-    parser.add_argument('--adults', type=int, default=1, help="Number of adult passengers")
-    parser.add_argument('--type', type=str, default="economy", help="Fare class (economy, premium-economy, business or first)")
-    parser.add_argument('--max_stops', type=int, help="Maximum number of stops (optional, [0|1|2])")
-    parser.add_argument('--inject_eu_cookies', action=argparse.BooleanOptionalAction, help="Cookies to bypass EU data collection form")
-
-
-    args = parser.parse_args()
-
+@app.post("/get_flights")
+async def get_flight_info(request: FlightRequest):
     # Create a new filter
     filter = create_filter(
         flight_data=[
             FlightData(
-                date=args.depart_date,  # Date of departure for outbound flight
-                from_airport=args.origin,
-                to_airport=args.destination
+                date=request.depart_date,
+                from_airport=request.origin,
+                to_airport=request.destination
             ),
             FlightData(
-                date=args.return_date,  # Date of departure for return flight
-                from_airport=args.destination,
-                to_airport=args.origin
+                date=request.return_date,
+                from_airport=request.destination,
+                to_airport=request.origin
             ),
         ],
-        trip="round-trip",  # Trip (round-trip, one-way)
-        seat=args.type,  # Seat (economy, premium-economy, business or first)
+        trip="round-trip",
+        seat=request.type,
         passengers=Passengers(
-            adults=args.adults,
+            adults=request.adults,
             children=0,
             infants_in_seat=0,
             infants_on_lap=0
         ),
-        max_stops=args.max_stops
+        max_stops=request.max_stops
     )
 
     b64 = filter.as_b64().decode('utf-8')
-    print(
-        "https://www.google.com/travel/flights?tfs=%s" % b64
-    )
+    flight_url = f"https://www.google.com/travel/flights?tfs={b64}"
 
     # Get flights with the filter
-    result = get_flights(filter,
-                         inject_eu_cookies=args.inject_eu_cookies
-                         )
+    result = get_flights(filter, inject_eu_cookies=request.inject_eu_cookies)
 
     try:
-        # Manually convert the result to a dictionary before serialization
         result_dict = result_to_dict(result)
-        print(json.dumps(result_dict, indent=4))
+        return {"url": flight_url, "flights": result_dict}
     except TypeError as e:
-        print("Serialization to JSON failed. Raw result output:")
-        print(result)
-        print("Error details:", str(e))
+        raise HTTPException(status_code=500, detail="Error in processing flight data")
 
-    # Print price information
-    print("The price is currently", result.current_price)
-
-if __name__ == "__main__":
-    main()
